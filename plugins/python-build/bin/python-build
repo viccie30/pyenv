@@ -2019,6 +2019,10 @@ build_package_get_pip() {
 }
 
 build_package_ensurepip() {
+  if [[ "${PYTHON_CONFIGURE_OPTS_ARRAY[*]} $CONFIGURE_OPTS $PYTHON_CONFIGURE_OPTS" == *"--without-ensurepip"* ]]; then
+    return
+  fi
+
   local ensurepip_opts
   # Install as `--altinstall` if the Python is installed as `altinstall` (#255)
   if [[ "$PYTHON_MAKE_INSTALL_TARGET" == *"altinstall"* ]]; then
@@ -2248,7 +2252,7 @@ if [[ "$CONFIGURE_OPTS $PYTHON_CONFIGURE_OPTS" == *"--enable-framework"* ]]; the
   create_framework_dirs "${DEFINITION_PATH##*/}"
   # the `/Library/Frameworks` suffix makes CPython build install apps under prefix rather than into /Applications (#1003)
   package_option python configure --enable-framework="${PREFIX_PATH}/Library/Frameworks"
-  
+
   #FIXME: doesn't properly handle paths with spaces. Fix by parsing *OPTS into arrays.
   CONFIGURE_OPTS="${CONFIGURE_OPTS//--enable-framework?(=*([^ ]))?( )/}";
   CONFIGURE_OPTS="${CONFIGURE_OPTS% }"

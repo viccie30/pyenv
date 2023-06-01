@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Summary: Print the latest installed or known version with the given prefix
-# Usage: pyenv latest [-k|--known] [-q|--quiet] <prefix>
+# Usage: pyenv latest [-k|--known] [-q|--quiet] [-r|--nonreleased] <prefix>
 #
-#   -k/--known      Select from all known versions instead of installed
-#   -q/--quiet      Do not print an error message on resolution failure
+#   -k/--known         Select from all known versions instead of installed
+#   -q/--quiet         Do not print an error message on resolution failure
+#   -r/--non-released  Include non-released versions if a released version
+#                      is not available.
 
 set -e
 [ -n "$PYENV_DEBUG" ] && set -x
@@ -17,6 +19,10 @@ do
             ;;
         -q|--quiet)
             QUIET=1
+            shift
+            ;;
+        -r|--non-released)
+            NONRELEASED=1
             shift
             ;;
         *)
@@ -35,41 +41,97 @@ IFS=$'\n'
     else
         DEFINITION_CANDIDATES=( $(python-build --definitions ) )
     fi
-    
+
     if printf '%s\n' "${DEFINITION_CANDIDATES[@]}" | grep -qxFe "$prefix"; then
         echo "$prefix"
         exit $exitcode;
     fi
-    
-    # https://stackoverflow.com/questions/11856054/is-there-an-easy-way-to-pass-a-raw-string-to-grep/63483807#63483807 
-    prefix_re="$(sed 's/[^\^]/[&]/g;s/[\^]/\\&/g' <<< "$prefix")"
-    # FIXME: more reliable and readable would probably be to loop over them and transform in pure Bash
-    DEFINITION_CANDIDATES=(\
-      $(printf '%s\n' "${DEFINITION_CANDIDATES[@]}" | \
-      grep -Ee "^$prefix_re[-.]" || true))
 
-    DEFINITION_CANDIDATES=(\
-        $(printf '%s\n' "${DEFINITION_CANDIDATES[@]}" | \
-          sed -E -e '/-dev$/d' -e '/-src$/d' -e '/-latest$/d' -e '/(a|b|rc)[0-9]+$/d'));
+    declare -A KEYED_DEFINITION_CANDIDATES
+    shopt -s extglob
+    IFS=.-
+    for DEFINITION_CANDIDATE in "${DEFINITION_CANDIDATES[@]}"; do
+        PARTS=( $DEFINITION_CANDIDATE )
+        if [[ ${PARTS[0]} != "$prefix" ]]; then
+            continue
+        fi
 
-    # Compose a sorting key, followed by | and original value
-    DEFINITION_CANDIDATES=(\
-        $(printf '%s\n' "${DEFINITION_CANDIDATES[@]}" | \
-          awk \
-            '{ if (match($0,"^[[:alnum:]]+-"))
-               { print substr($0,0,RLENGTH-1) "." substr($0,RLENGTH+1) "..|" $0; }
-             else
-               { print $0 "...|" $0; }
-             }'))
-    DEFINITION_CANDIDATES=(\
-        $(printf '%s\n' "${DEFINITION_CANDIDATES[@]}" \
-          | sort -t. -k1,1r -k 2,2nr -k 3,3nr -k4,4nr \
-          | cut -f2 -d $'|' \
-        || true))
-    DEFINITION="${DEFINITION_CANDIDATES[0]}"
+        if [[ ${PARTS[-1]} =~ ^(dev|src|latest)|(a|b|rc)([0-9]+)$ ]]; then
+            if [[ -z $NONRELEASED ]]; then continue; fi
 
-    if [[ -n "$DEFINITION" ]]; then
-        echo "$DEFINITION"
+            case "$BASH_REMATCH" in
+                -src)
+                    KEY=${DEFINITION_CANDIDATE%-src}.-1.
+                    ;;
+                rc*)
+                    KEY=${DEFINITION_CANDIDATE%"$BASH_REMATCH"}.-2.${BASH_REMATCH[4]}
+                    ;;
+                b*)
+                    KEY=${DEFINITION_CANDIDATE%"$BASH_REMATCH"}.-3.${BASH_REMATCH[4]}
+                    ;;
+                a*)
+                    KEY=${DEFINITION_CANDIDATE%"$BASH_REMATCH"}.-4.${BASH_REMATCH[4]}
+                    ;;
+                -latest)
+                    KEY=${DEFINITION_CANDIDATE%-latest}.-5.
+                    ;;
+                -dev)
+                    KEY=${DEFINITION_CANDIDATE%-dev}.-6.
+                    ;;
+            esac
+        fi
+
+        case "$DEFINITION_CANDIDATE" in
+            !("$prefix"[-.]*))
+                continue
+                ;;
+            +([[:alnum:]])-)
+
+        esac
+        # if ! [[ $DEFINITION_CANDIDATE =~ ^"$prefix"[-.] ]]; then continue; fi
+
+        # if [[ $DEFINITION_CANDIDATE =~ (-(dev|src|latest)|(a|b|rc)([0-9]+))$ ]]; then
+        #     if [[ -z $NONRELEASED ]]; then continue; fi
+
+        #     case "$BASH_REMATCH" in
+        #         -src)
+        #             KEY=${DEFINITION_CANDIDATE%-src}.-1.
+        #             ;;
+        #         rc*)
+        #             KEY=${DEFINITION_CANDIDATE%"$BASH_REMATCH"}.-2.${BASH_REMATCH[4]}
+        #             ;;
+        #         b*)
+        #             KEY=${DEFINITION_CANDIDATE%"$BASH_REMATCH"}.-3.${BASH_REMATCH[4]}
+        #             ;;
+        #         a*)
+        #             KEY=${DEFINITION_CANDIDATE%"$BASH_REMATCH"}.-4.${BASH_REMATCH[4]}
+        #             ;;
+        #         -latest)
+        #             KEY=${DEFINITION_CANDIDATE%-latest}.-5.
+        #             ;;
+        #         -dev)
+        #             KEY=${DEFINITION_CANDIDATE%-dev}.-6.
+        #             ;;
+        #     esac
+        # else
+        #     KEY=${DEFINITION_CANDIDATE}..
+        # fi
+
+        # if [[ $KEY =~ ^([[:alnum:]]+)- ]]; then
+        #     KEY=${KEY/-/.}..
+        # else
+        #     KEY=$KEY...
+        # fi
+        KEYED_DEFINITION_CANDIDATES[$KEY]=$DEFINITION_CANDIDATE
+    done
+    IFS=$'\n'
+
+    KEY=(\
+        $(printf '%s\n' "${!KEYED_DEFINITION_CANDIDATES[@]}" \
+          | sort -t. -k1,1r -k 2,2nr -k 3,3nr -k4,4nr -k5,5nr -k6,6nr))
+
+    if [[ -n $KEY ]]; then
+        echo "${KEYED_DEFINITION_CANDIDATES[$KEY]}"
     else
         if [[ -z $QUIET ]]; then
             echo "pyenv: no $([[ -z $FROM_KNOWN ]] && echo installed || echo known) versions match the prefix \`$prefix'" >&2
